@@ -1,0 +1,18 @@
+startDelaySeconds: 0
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+rules:
+  - pattern: 'mbeans<type=ClickStats><>TotalClicks'
+    name: clickstats_total_clicks
+    type: GAUGE
+    help: "Общее количество кликов"
+
+  - pattern: 'mbeans<type=ClickStats><>Misses'
+    name: clickstats_misses
+    type: GAUGE
+    help: "Количество промахов"
+
+  - pattern: 'mbeans<type=MissRatio><>MissRatio'
+    name: clickstats_miss_ratio
+    type: GAUGE
+    help: "Процент промахов"

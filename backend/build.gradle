@@ -1,0 +1,507 @@
+import java.security.MessageDigest
+
+plugins {
+  id 'java'
+  id 'war'
+}
+
+group 'org.example'
+
+repositories {
+  mavenCentral()
+}
+
+tasks.withType(JavaCompile) {
+  options.encoding = 'UTF-8'
+}
+
+ext {
+  junitVersion = '5.9.2'
+//  seleniumVersion = '4.32.0'
+  seleniumVersion = '4.5.0'
+}
+
+configurations {
+  functionalTestImplementation.extendsFrom testImplementation
+  functionalTestRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
+sourceSets {
+  main {
+    java {
+      srcDirs = ['src/main/java']
+    }
+  }
+  functionalTest {
+    java {
+      srcDirs = ['src/functionalTest/java']
+    }
+    resources {
+      srcDirs = ['src/functionalTest/resources']
+    }
+    compileClasspath += sourceSets.main.output
+    runtimeClasspath += sourceSets.main.output
+  }
+}
+
+war {
+  archiveFileName = 'backend.war'
+  destinationDirectory = file("$buildDir/libs")
+  from 'src/main/webapp'
+
+  // Добавьте WEB-INF если его нет в src/main/webapp
+  into('WEB-INF') {
+    from 'src/main/resources/META-INF/persistence.xml'
+  }
+}
+
+def src_dir = layout.projectDirectory.dir('src/main/java')
+def classes_dir = layout.buildDirectory.dir('custom-classes')
+
+tasks.register("compileCustom", JavaCompile) {
+  group = "custom"
+  description = "Compiling the project's source codes"
+
+
+  source = fileTree(src_dir) {
+    include '**/*.java'
+  }
+
+  destinationDirectory = classes_dir
+  classpath = sourceSets.main.compileClasspath
+  options.annotationProcessorPath = configurations.annotationProcessor
+
+  doFirst {
+    if (!src_dir.asFile.exists()) {
+      throw new GradleException("The source directory does not exist: ${src_dir}")
+    }
+  }
+
+  doLast {
+    println "Compilation complete. Classes in: ${destinationDirectory.get()}"
+  }
+}
+
+tasks.register("buildCustom", Jar) {
+  group = "Custom"
+  description = "Compilation of the project's source code and its packaging into an executable WAR archive."
+  dependsOn("compileCustom")
+
+  // Настройки архива
+  archiveFileName.set("my-app.jar")
+  destinationDirectory.set(layout.buildDirectory.dir("custom-lib"))
+
+  from(classes_dir)
+  from("src/main/resources") {
+    exclude("**/*.tmp")  // Исключаем временные файлы
+  }
+}
+
+tasks.register("cleanCustom") {
+  group = "Custom"
+  description = "Deleting compiled project classes and all temporary files (if any)."
+
+  doLast {
+    println "Cleaning..."
+    delete buildDir
+
+    println "Cleaned successfully."
+  }
+}
+
+tasks.register('docCustom', Javadoc) {
+  description = "Generates Javadoc and adds MD5/SHA-1 checksums of project files to MANIFEST.MF."
+  group = 'Custom'
+  dependsOn 'compileCustom'
+
+  source = sourceSets.main.allJava
+  classpath = sourceSets.main.compileClasspath + files("$buildDir/custom-classes")
+  destinationDir = file("$buildDir/docs/javadoc")
+
+  options.addStringOption('Xdoclint:none', '-quiet')
+
+  doLast {
+    // 1. Подготовка директорий и файлов
+    def customClassesDir = file("$buildDir/custom-classes")
+    def manifestDir = file("$buildDir/tmp/docCustom/META-INF")
+    manifestDir.mkdirs()
+
+    def manifestFile = file("$manifestDir/MANIFEST.MF")
+    def files = customClassesDir.exists() ? fileTree(customClassesDir).files : []
+
+    // 2. Создаем MANIFEST.MF с хешами
+    manifestFile.withWriter { writer ->
+      // Базовые атрибуты манифеста
+      writer.writeLine("Manifest-Version: 1.0")
+      writer.writeLine("Created-By: Gradle ${gradle.gradleVersion}")
+      writer.writeLine("Project: ${project.name}")
+      writer.writeLine("")
+
+      // Хеши для скомпилированных классов
+      files.each { file ->
+        if (file.isFile()) {
+          def content = file.bytes
+          def md5 = MessageDigest.getInstance('MD5').digest(content).encodeHex().toString()
+          def sha1 = MessageDigest.getInstance('SHA-1').digest(content).encodeHex().toString()
+
+          writer.writeLine("Name: ${file.name}")
+          writer.writeLine("MD5: $md5")
+          writer.writeLine("SHA1: $sha1")
+          writer.writeLine("")
+        }
+      }
+
+      // Хеши для исходных файлов (опционально)
+      source.each { sourceFile ->
+        if (sourceFile.isFile()) {
+          def content = sourceFile.bytes
+          def md5 = MessageDigest.getInstance('MD5').digest(content).encodeHex().toString()
+          def sha1 = MessageDigest.getInstance('SHA-1').digest(content).encodeHex().toString()
+
+          writer.writeLine("Name: ${sourceFile.name}")
+          writer.writeLine("MD5: $md5")
+          writer.writeLine("SHA1: $sha1")
+          writer.writeLine("")
+        }
+      }
+    }
+
+    // 3. Создаем JAR с документацией (опционально)
+    tasks.register('packageDocsJar', Jar) {
+      from destinationDir
+      from(manifestDir) {
+        into 'META-INF'
+      }
+      archiveFileName = "${project.name}-docs.jar"
+      destinationDirectory = file("$buildDir/libs")
+    }
+
+    logger.quiet("Javadoc generated at: ${destinationDir}")
+    logger.quiet("Checksums written to: ${manifestFile}")
+  }
+}
+
+tasks.register('validateXml') {
+  group = 'Verification'
+  description = 'Validates XML files structure'
+
+  doLast {
+    def xmlFiles = fileTree(dir: project.projectDir, includes: ['**/*.xml'])
+    def errorCount = 0
+
+    xmlFiles.each { xmlFile ->
+      try {
+        new XmlSlurper().parse(xmlFile)
+        // Используем absolutePath вместо relativePath
+        logger.quiet("[VALID] ${xmlFile.absolutePath}")
+      } catch (Exception e) {
+        errorCount++
+        logger.error("[INVALID] ${xmlFile.absolutePath}: ${e.message}")
+      }
+    }
+
+    if (errorCount > 0) {
+      logger.error("Found $errorCount invalid XML files")
+      if (!project.hasProperty('ignoreXmlErrors')) {
+        throw new GradleException("XML validation failed")
+      }
+    } else {
+      logger.quiet("All XML files are valid")
+    }
+  }
+}
+dependencies {
+  // Основные зависимости для тестов
+  testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.2'
+  testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.8.2'
+
+  // Зависимости для функциональных тестов
+  functionalTestImplementation 'org.seleniumhq.selenium:selenium-java:4.1.4'
+  functionalTestImplementation 'io.github.bonigarcia:webdrivermanager:5.1.0'
+}
+
+tasks.register('playMusic') {
+  group = 'Custom'
+  description = 'Plays victory music after successful build'
+
+  doLast {
+    try {
+      def musicFile = file('src/main/resources/sounds/success.wav')
+      if (musicFile.exists()) {
+        "cmd /c start ${musicFile.absolutePath}".execute()
+      } else {
+        "cmd /c start rundll32 user32.dll,MessageBeep".execute()
+      }
+    } catch (Exception e) {
+      logger.warn("Couldn't play music: ${e.message}")
+    }
+  }
+}
+
+// Расширение для вычисления хешей (добавляем в конец файла)
+byte[].metaClass.hashString = { String algorithm ->
+  MessageDigest.getInstance(algorithm)
+          .digest(delegate)
+          .encodeHex()
+          .toString()
+}
+
+// Настройка порядка выполнения задач
+buildCustom.dependsOn validateXml
+buildCustom.finalizedBy playMusic
+
+tasks.register('customDiff') {
+  group = 'Custom'
+  description = 'Проверка изменений и коммит указанных классов'
+
+  doLast {
+    // 1. Загружаем классы для проверки из gradle.properties
+    def props = new Properties()
+    file('gradle.properties').withInputStream { props.load(it) }
+
+    def trackedClasses = props.getProperty('diff.trackedClasses', '').split(',')
+            .collect { it.trim() }
+            .findAll { !it.isEmpty() }
+
+    if (trackedClasses.isEmpty()) {
+      logger.quiet('Нет классов для отслеживания в diff.trackedClasses')
+      return
+    }
+
+    // 2. Получаем список измененных файлов
+    def changedFiles = 'git diff --name-only --cached'.execute().text.readLines() +
+            'git ls-files --modified --others --exclude-standard'.execute().text.readLines()
+
+    // 3. Фильтруем только указанные классы
+    def relevantChanges = changedFiles.findAll { file ->
+      trackedClasses.any { clazz ->
+        file.contains(clazz.replace('.', '/') + '.java') ||
+                file.contains(clazz.replace('.', '/') + '.kt')
+      }
+    }
+
+    // 4. Проверяем, есть ли другие изменения
+    def otherChanges = changedFiles - relevantChanges
+
+    if (otherChanges) {
+      logger.quiet("Обнаружены изменения в других файлах:\n${otherChanges.join('\n')}")
+      logger.quiet("Коммит не выполнен")
+      return
+    }
+
+    if (relevantChanges.isEmpty()) {
+      logger.quiet('Нет изменений в отслеживаемых классах')
+      return
+    }
+
+    // 5. Выполняем коммит
+    logger.quiet("Изменения для коммита:\n${relevantChanges.join('\n')}")
+
+    def addCmd = "git add ${relevantChanges.join(' ')}".execute()
+    if (addCmd.waitFor() != 0) {
+      logger.error("Ошибка при добавлении файлов: ${addCmd.err.text}")
+      return
+    }
+
+    def commitCmd = "git commit -m 'Автокоммит: ${relevantChanges.join(', ')}'".execute()
+    if (commitCmd.waitFor() == 0) {
+      logger.quiet("Коммит выполнен успешно")
+    } else {
+      logger.error("Ошибка коммита: ${commitCmd.err.text}")
+    }
+  }
+}
+
+tasks.register('teamCustom') {
+  description = "Builds last 4 Git revisions and packages JARs into ZIP"
+  group = 'Custom'
+
+  doLast {
+    // 1. Setup directories
+    def tempDir = file("$buildDir/teamCustom")
+    tempDir.deleteDir()
+    tempDir.mkdirs()
+
+    // 2. Get last 5 revisions (current + 4 previous)
+    def gitLog = executeGitCommand('log --pretty=format:"%H" -5', projectDir)
+    def revisions = gitLog.output.readLines()
+
+    if (revisions.empty) {
+      throw new GradleException("Failed to get Git history")
+    }
+
+    def jarFiles = []
+    def originalBranch = executeGitCommand('branch --show-current', projectDir).output.trim()
+
+    try {
+      revisions.eachWithIndex { commitHash, index ->
+        println "Processing revision ${index + 1}: ${commitHash.substring(0, 7)}"
+
+        // 3. Use git worktree
+        def revDir = new File(tempDir, "rev-${index + 1}")
+        executeGitCommand("worktree add ${revDir.absolutePath} ${commitHash}", projectDir)
+
+        try {
+          // 4. Build project
+          def buildResult = executeGradleCommand('buildCustom', revDir)
+
+          if (buildResult.exitValue == 0) {
+            def jarFile = new File(revDir, "build/custom-lib/my-app.jar")
+            if (jarFile.exists()) {
+              def targetFile = new File(tempDir, "my-app-${index + 1}.jar")
+              copy {
+                from jarFile
+                into tempDir
+                rename 'my-app.jar', "my-app-${index + 1}.jar"
+              }
+              jarFiles << targetFile
+            }
+          }
+        } finally {
+          // Cleanup worktree
+          executeGitCommand("worktree remove ${revDir.name}", projectDir)
+        }
+      }
+
+      // 5. Create ZIP archive
+      if (jarFiles) {
+        ant.zip(destfile: "$tempDir/previous-revisions.zip") {
+          jarFiles.each { jar ->
+            fileset(file: jar)
+          }
+        }
+        println "Created ZIP archive: $tempDir/previous-revisions.zip"
+      }
+    } finally {
+      // Restore original branch
+      executeGitCommand("checkout $originalBranch", projectDir)
+    }
+  }
+}
+
+// Helper function for Git commands
+def executeGitCommand(String command, File workingDir) {
+  def process = new ProcessBuilder()
+          .command("git", *command.split(' '))
+          .directory(workingDir)
+          .redirectErrorStream(true)
+          .start()
+
+  process.waitFor()
+  def output = process.text
+
+  return [
+          output: output,
+          exitValue: process.exitValue()
+  ]
+}
+
+// Helper function for Gradle commands
+def executeGradleCommand(String task, File workingDir) {
+  def gradlew = System.getProperty('os.name').toLowerCase().contains('windows') ?
+          'gradlew.bat' : './gradlew'
+
+  def process = new ProcessBuilder()
+          .command(gradlew, task)
+          .directory(workingDir)
+          .redirectErrorStream(true)
+          .start()
+
+  process.waitFor()
+
+  return [
+          output: process.text,
+          exitValue: process.exitValue()
+  ]
+}
+ext {
+  functionalSrcDir = file('src/functionalTest/java')
+  functionalClassesDir = file("$buildDir/classes/java/functionalTest")
+}
+
+// 2. Настраиваем конфигурации
+configurations {
+  functionalTestImplementation.extendsFrom testImplementation
+  functionalTestRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
+// 3. Создаем source set для функциональных тестов
+sourceSets {
+  functionalTest {
+    java.srcDir file('src/functionalTest/java')
+    resources.srcDir file('src/functionalTest/resources')
+    compileClasspath += sourceSets.main.output + configurations.testRuntimeClasspath
+    runtimeClasspath += output + compileClasspath
+  }
+}
+
+// 4. Задача для компиляции функциональных тестов
+tasks.register("compileFunctionalTests", JavaCompile) {
+  group = "custom"
+  description = "Компиляция функциональных тестов"
+
+  source = sourceSets.functionalTest.java
+  destinationDirectory = file(functionalClassesDir)
+  classpath = sourceSets.functionalTest.compileClasspath
+
+  doLast {
+    println "Functional tests compiled successfully to ${destinationDirectory.get()}"
+  }
+}
+
+// 5. Задача для запуска функциональных тестов
+tasks.register("custom-functional-test", JavaExec) {
+  group = "custom"
+  description = "Запуск функциональных тестов"
+  dependsOn compileFunctionalTests
+
+  classpath = sourceSets.functionalTest.runtimeClasspath
+  mainClass = "org.junit.platform.console.ConsoleLauncher"
+  args = [
+          "--scan-class-path", functionalClassesDir,
+          "--details", "tree",
+          "--details-theme", "ascii"
+  ]
+
+  doLast {
+    println "Functional tests execution completed"
+  }
+}
+
+
+dependencies {
+  compileOnly('jakarta.enterprise:jakarta.enterprise.cdi-api:3.0.0')
+  compileOnly('jakarta.ejb:jakarta.ejb-api:4.0.0')
+  compileOnly('jakarta.persistence:jakarta.persistence-api:3.0.0')
+  compileOnly('jakarta.ws.rs:jakarta.ws.rs-api:3.0.0')
+  compileOnly('jakarta.servlet:jakarta.servlet-api:5.0.0')
+  implementation 'jakarta.platform:jakarta.jakartaee-api:9.1.0'
+  implementation 'jakarta.validation:jakarta.validation-api:2.0.2'
+
+  implementation 'org.postgresql:postgresql:42.7.4'
+  implementation 'jakarta.persistence:jakarta.persistence-api:3.1.0'
+  implementation 'org.hibernate:hibernate-core:6.2.8.Final'
+
+  implementation 'at.favre.lib:bcrypt:0.10.2'
+  implementation 'io.jsonwebtoken:jjwt-api:0.11.5'
+  runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.11.5'
+  runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.11.5'
+
+  testImplementation "org.junit.jupiter:junit-jupiter-api:${junitVersion}"
+  testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:${junitVersion}"
+
+  compileOnly 'org.projectlombok:lombok:1.18.36'
+  annotationProcessor 'org.projectlombok:lombok:1.18.36'
+
+  testCompileOnly 'org.projectlombok:lombok:1.18.36'
+  testAnnotationProcessor 'org.projectlombok:lombok:1.18.36'
+
+  functionalTestImplementation "org.junit.platform:junit-platform-console:1.9.2"
+  functionalTestImplementation "org.apiguardian:apiguardian-api:1.1.2"
+  functionalTestImplementation "org.seleniumhq.selenium:selenium-java:4.16.1"
+  functionalTestImplementation "org.seleniumhq.selenium:selenium-devtools-v119:4.16.1"
+  functionalTestImplementation "io.github.bonigarcia:webdrivermanager:5.6.3"
+
+//  testImplementation 'io.github.bonigarcia:webdrivermanager:5.6.3'
+
+}
